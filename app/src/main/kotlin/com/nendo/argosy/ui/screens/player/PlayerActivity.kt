@@ -17,6 +17,7 @@ import androidx.compose.runtime.setValue
 import androidx.lifecycle.lifecycleScope
 import com.nendo.argosy.DualScreenManagerHolder
 import com.nendo.argosy.core.input.ControllerDetector
+import com.nendo.argosy.core.input.KeyboardPad
 import com.nendo.argosy.data.preferences.UserPreferencesRepository
 import com.nendo.argosy.ui.input.GamepadEvent
 import com.nendo.argosy.ui.input.InputResult
@@ -263,6 +264,7 @@ class PlayerActivity : ComponentActivity() {
      */
     @SuppressLint("RestrictedApi")
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        KeyboardPad.translate(event)?.let { return dispatchKeyEvent(it) }
         val dsm = DualScreenManagerHolder.instance
         if (dsm != null && !dsm.claimInput(event)) return true
         connectedControllerTracker.noteInput(event)

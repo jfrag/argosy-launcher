@@ -46,6 +46,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.ComposeView
 import androidx.compose.ui.res.stringResource
+import com.nendo.argosy.core.input.KeyboardPad
 import com.nendo.argosy.libretro.ui.RAConnectionNotification
 import com.nendo.argosy.core.input.ConnectedControllerTracker
 import com.nendo.argosy.core.input.ControllerDetector
@@ -3245,6 +3246,7 @@ class LibretroActivity : ComponentActivity() {
 
     @SuppressLint("RestrictedApi")
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        KeyboardPad.translate(event)?.let { return dispatchKeyEvent(it) }
         observeVirtualPad(event)
         connectedControllerTracker.noteInput(event)
         return dispatchKeyFrom(event, KeyPressGate.Source.Key, coreBound = true)

@@ -21,6 +21,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.text.font.FontFamily
+import com.nendo.argosy.core.input.KeyboardPad
 import com.nendo.argosy.ui.theme.CustomFontFamilies
 import com.nendo.argosy.ui.theme.CustomFontLoader
 import com.nendo.argosy.ui.theme.ThemeState
@@ -341,6 +342,7 @@ class SecondaryHomeActivity :
      */
     @SuppressLint("RestrictedApi")
     override fun dispatchKeyEvent(event: android.view.KeyEvent): Boolean {
+        KeyboardPad.translate(event)?.let { return dispatchKeyEvent(it) }
         if (yieldsKeysToMediaPlayer()) {
             val forward = dsm.mediaPlayerKeyDispatcher
             if (forward != null) {

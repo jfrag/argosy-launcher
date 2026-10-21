@@ -53,7 +53,12 @@ jobs:
         continue-on-error: true
         run: |
           set -o pipefail
-          ./gradlew assembleRelease -x verifyQuayPassReleaseConfig -x verifyReleaseSigningConfig --stacktrace 2>&1 | tee build-release.log
+          ./gradlew --stop || true
+          pkill -f KotlinCompileDaemon || true
+          ./gradlew assembleRelease -x verifyQuayPassReleaseConfig -x verifyReleaseSigningConfig --stacktrace \
+            -Pkotlin.compiler.execution.strategy=in-process \
+            -Dorg.gradle.jvmargs="-Xmx12g -XX:+UseParallelGC -XX:MaxMetaspaceSize=1g -Dfile.encoding=UTF-8" \
+            2>&1 | tee build-release.log
 
       - name: Report release build errors
         if: steps.release.outcome == 'failure'

@@ -68,3 +68,8 @@
 -keep class discordpp.** { *; }
 -dontwarn com.discord.socialsdk.**
 -dontwarn discordpp.**
+
+# Lepton gamepad bridge entry point (app_process)
+-keep class com.nendo.argosy.tools.LeptonPadInjector {
+    public static void main(java.lang.String[]);
+}

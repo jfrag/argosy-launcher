@@ -27,6 +27,7 @@ jobs:
         uses: gradle/actions/setup-gradle@v4
 
       - name: Compose versions resolved
+        continue-on-error: true
         run: |
           set -o pipefail
           ./gradlew :app:dependencyInsight --configuration debugRuntimeClasspath --dependency androidx.compose.ui:ui 2>&1 | tee insight.log

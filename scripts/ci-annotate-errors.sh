@@ -4,9 +4,10 @@ log="${1:?usage: ci-annotate-errors.sh <build.log>}"
 [ -f "$log" ] || { echo "::error::no log file $log"; exit 0; }
 
 {
-  grep -E '^e: |^w: .*(deprecated|DEPRECATION_ERROR)|error:|FAILED|requires|minCompileSdk|minAndroidGradlePluginVersion' "$log" | grep -vE '^w: ' | head -80
+  grep -iE '^e: |error|FAILED|requires|R8|missing class|minCompileSdk|minAndroidGradlePluginVersion' "$log" \
+    | grep -vE '^[[:space:]]+at |^w: ' | cut -c1-400 | head -80
   echo "-----"
-  awk '/\* What went wrong:/{f=1} f{print; n++} n>40{exit}' "$log"
+  awk '/\* What went wrong:/{f=1;n=0} f&&n<15{print;n++} n>=15{f=0}' "$log" | cut -c1-400
 } > ci-errors.txt
 
 total=$(wc -l < ci-errors.txt)

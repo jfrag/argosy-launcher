@@ -14,9 +14,12 @@ import struct
 import subprocess
 import sys
 import time
+import zipfile
 
 INJECTOR_CLASS = "com.nendo.argosy.tools.LeptonPadInjector"
 INJECTOR_PACKAGE = "com.nendo.argosy"
+INJECTOR_JAR = os.path.expanduser("~/.local/share/lepton-padbridge/injector.jar")
+CONTAINER_JAR = "/data/local/tmp/lepton-pad-injector.jar"
 VIRTUAL_PAD_IDS = {("28de", "11ff")}
 RESCAN_SECONDS = 2.0
 INJECTOR_MISSING = 3
@@ -145,10 +148,27 @@ class Pad:
             pass
 
 
+def injector_classpath(container):
+    if os.path.exists(INJECTOR_JAR):
+        copied = subprocess.run(
+            ["podman", "cp", INJECTOR_JAR, f"{container}:{CONTAINER_JAR}"],
+            capture_output=True, text=True,
+        )
+        if copied.returncode == 0:
+            return CONTAINER_JAR
+        log(f"cannot copy the injector into {container}: {copied.stderr.strip()}")
+    return None
+
+
 def start_injector(container):
+    classpath = injector_classpath(container)
+    if classpath:
+        locate = f"APK={classpath}; "
+    else:
+        locate = f"APK=$(pm path {INJECTOR_PACKAGE} | sed -n '1s/^package://p'); "
     command = (
         ANDROID_ENV
-        + f"APK=$(pm path {INJECTOR_PACKAGE} | sed -n '1s/^package://p'); "
+        + locate
         + f"[ -n \"$APK\" ] || exit {INJECTOR_MISSING}; "
         + f"CLASSPATH=$APK exec app_process /system/bin {INJECTOR_CLASS}"
     )
@@ -156,6 +176,18 @@ def start_injector(container):
         ["podman", "exec", "-i", container, "/system/bin/sh", "-c", command],
         stdin=subprocess.PIPE, text=True, bufsize=1,
     )
+
+
+def install_injector(apk):
+    os.makedirs(os.path.dirname(INJECTOR_JAR), exist_ok=True)
+    with zipfile.ZipFile(apk) as source, zipfile.ZipFile(INJECTOR_JAR + ".tmp", "w") as jar:
+        dex = [n for n in source.namelist() if n.startswith("classes") and n.endswith(".dex")]
+        if not dex:
+            sys.exit(f"no classes*.dex in {apk}")
+        for name in dex:
+            jar.writestr(name, source.read(name))
+    os.replace(INJECTOR_JAR + ".tmp", INJECTOR_JAR)
+    print(f"injector installed: {INJECTOR_JAR} ({len(dex)} dex)")
 
 
 def bridge(container):
@@ -218,4 +250,7 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    if len(sys.argv) == 3 and sys.argv[1] == "--install-injector":
+        install_injector(sys.argv[2])
+    else:
+        main()

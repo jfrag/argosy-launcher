@@ -1,0 +1,10 @@
+[Unit]
+Description=Steam virtual pad bridge for Lepton Android apps
+
+[Service]
+ExecStart=%h/.local/bin/lepton-padbridge
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target

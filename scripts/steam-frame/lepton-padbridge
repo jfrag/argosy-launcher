@@ -1,0 +1,221 @@
+#!/usr/bin/env python3
+"""Forward Steam's virtual Xbox pads into the Android app running in a Lepton container.
+
+Lepton passes no gamepad to Android. This bridge reads every Steam virtual Xbox 360 pad
+(28de:11ff) on the SteamOS host and streams it to LeptonPadInjector, which runs inside the
+container through app_process with the Argosy APK as classpath and injects the input.
+"""
+
+import fcntl
+import glob
+import os
+import select
+import struct
+import subprocess
+import sys
+import time
+
+INJECTOR_CLASS = "com.nendo.argosy.tools.LeptonPadInjector"
+INJECTOR_PACKAGE = "com.nendo.argosy"
+VIRTUAL_PAD_IDS = {("28de", "11ff")}
+RESCAN_SECONDS = 2.0
+INJECTOR_MISSING = 3
+
+EV_SYN, EV_KEY, EV_ABS = 0, 1, 3
+EVENT = struct.Struct("llHHi")
+
+PAD_KEYS = {
+    304: 96,   # BTN_A -> KEYCODE_BUTTON_A
+    305: 97,   # BTN_B -> KEYCODE_BUTTON_B
+    307: 99,   # BTN_X -> KEYCODE_BUTTON_X
+    308: 100,  # BTN_Y -> KEYCODE_BUTTON_Y
+    310: 102,  # BTN_TL -> KEYCODE_BUTTON_L1
+    311: 103,  # BTN_TR -> KEYCODE_BUTTON_R1
+    314: 109,  # BTN_SELECT -> KEYCODE_BUTTON_SELECT
+    315: 108,  # BTN_START -> KEYCODE_BUTTON_START
+    316: 110,  # BTN_MODE -> KEYCODE_BUTTON_MODE
+    317: 106,  # BTN_THUMBL -> KEYCODE_BUTTON_THUMBL
+    318: 107,  # BTN_THUMBR -> KEYCODE_BUTTON_THUMBR
+}
+HAT_KEYS = {16: (21, 22), 17: (19, 20)}  # ABS_HAT0X: LEFT/RIGHT, ABS_HAT0Y: UP/DOWN
+STICK_AXES = {0: 0, 1: 1, 3: 2, 4: 3}  # ABS_X, ABS_Y, ABS_RX, ABS_RY -> x, y, z, rz
+TRIGGER_AXES = {2: 4, 5: 5}  # ABS_Z, ABS_RZ -> ltrigger, rtrigger
+
+ANDROID_ENV = (
+    "P=$(pidof adbd); "
+    "eval \"$(tr '\\0' '\\n' < /proc/$P/environ "
+    "| grep -E '^(PATH|ANDROID_[A-Z0-9_]+|BOOTCLASSPATH|SYSTEMSERVERCLASSPATH)=' "
+    "| sed 's/^/export /')\"; "
+)
+
+
+def log(message):
+    print(f"lepton-padbridge: {message}", file=sys.stderr, flush=True)
+
+
+def lepton_container():
+    result = subprocess.run(
+        ["podman", "ps", "--filter", "label=lepton=true", "--format", "{{.Names}}"],
+        capture_output=True, text=True,
+    )
+    names = result.stdout.split()
+    return names[0] if names else None
+
+
+def virtual_pads():
+    pads = []
+    for sysfs in glob.glob("/sys/class/input/event*"):
+        try:
+            with open(f"{sysfs}/device/id/vendor") as v, open(f"{sysfs}/device/id/product") as p:
+                ids = (v.read().strip(), p.read().strip())
+        except OSError:
+            continue
+        if ids in VIRTUAL_PAD_IDS:
+            pads.append("/dev/input/" + os.path.basename(sysfs))
+    return pads
+
+
+def abs_range(fd, code):
+    eviocgabs = 0x80184540 + code
+    try:
+        _, minimum, maximum, _, _, _ = struct.unpack("6i", fcntl.ioctl(fd, eviocgabs, bytes(24)))
+        return minimum, maximum
+    except OSError:
+        return (0, 255) if code in TRIGGER_AXES else (-32768, 32767)
+
+
+class Pad:
+    def __init__(self, path):
+        self.path = path
+        self.fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
+        self.ranges = {code: abs_range(self.fd, code) for code in (*STICK_AXES, *TRIGGER_AXES)}
+        self.axes = [0.0] * 6
+        self.hat = {16: 0, 17: 0}
+        self.axes_dirty = False
+
+    def normalize(self, code, value):
+        minimum, maximum = self.ranges[code]
+        if maximum <= minimum:
+            return 0.0
+        if code in TRIGGER_AXES:
+            return max(0.0, min(1.0, (value - minimum) / (maximum - minimum)))
+        center = (maximum + minimum) / 2
+        return max(-1.0, min(1.0, (value - center) / ((maximum - minimum) / 2)))
+
+    def read(self):
+        lines = []
+        try:
+            data = os.read(self.fd, EVENT.size * 64)
+        except BlockingIOError:
+            return lines
+        for offset in range(0, len(data) - EVENT.size + 1, EVENT.size):
+            _, _, ev_type, code, value = EVENT.unpack_from(data, offset)
+            if ev_type == EV_KEY and code in PAD_KEYS and value in (0, 1):
+                lines.append(f"K {PAD_KEYS[code]} {value}")
+            elif ev_type == EV_ABS and code in HAT_KEYS:
+                lines.extend(self.hat_change(code, max(-1, min(1, value))))
+            elif ev_type == EV_ABS and code in STICK_AXES:
+                self.axes[STICK_AXES[code]] = self.normalize(code, value)
+                self.axes_dirty = True
+            elif ev_type == EV_ABS and code in TRIGGER_AXES:
+                self.axes[TRIGGER_AXES[code]] = self.normalize(code, value)
+                self.axes_dirty = True
+            elif ev_type == EV_SYN and self.axes_dirty:
+                self.axes_dirty = False
+                lines.append("M " + " ".join(f"{a:.4f}" for a in self.axes))
+        return lines
+
+    def hat_change(self, code, value):
+        previous = self.hat[code]
+        if value == previous:
+            return []
+        self.hat[code] = value
+        negative, positive = HAT_KEYS[code]
+        lines = []
+        if previous:
+            lines.append(f"K {negative if previous < 0 else positive} 0")
+        if value:
+            lines.append(f"K {negative if value < 0 else positive} 1")
+        return lines
+
+    def close(self):
+        try:
+            os.close(self.fd)
+        except OSError:
+            pass
+
+
+def start_injector(container):
+    command = (
+        ANDROID_ENV
+        + f"APK=$(pm path {INJECTOR_PACKAGE} | sed -n '1s/^package://p'); "
+        + f"[ -n \"$APK\" ] || exit {INJECTOR_MISSING}; "
+        + f"CLASSPATH=$APK exec app_process /system/bin {INJECTOR_CLASS}"
+    )
+    return subprocess.Popen(
+        ["podman", "exec", "-i", container, "/system/bin/sh", "-c", command],
+        stdin=subprocess.PIPE, text=True, bufsize=1,
+    )
+
+
+def bridge(container):
+    injector = start_injector(container)
+    log(f"injector started in {container}")
+    pads = {}
+    next_scan = 0.0
+    try:
+        while injector.poll() is None:
+            now = time.monotonic()
+            if now >= next_scan:
+                next_scan = now + RESCAN_SECONDS
+                if lepton_container() != container:
+                    return
+                for path in virtual_pads():
+                    if path not in pads:
+                        try:
+                            pads[path] = Pad(path)
+                            log(f"reading {path}")
+                        except OSError as error:
+                            log(f"cannot open {path}: {error}")
+            if not pads:
+                time.sleep(RESCAN_SECONDS)
+                continue
+            ready, _, _ = select.select([p.fd for p in pads.values()], [], [], RESCAN_SECONDS)
+            for pad in [p for p in pads.values() if p.fd in ready]:
+                try:
+                    lines = pad.read()
+                except OSError:
+                    pad.close()
+                    pads.pop(pad.path, None)
+                    continue
+                if lines:
+                    injector.stdin.write("\n".join(lines) + "\n")
+    except BrokenPipeError:
+        pass
+    finally:
+        for pad in pads.values():
+            pad.close()
+        if injector.poll() is None:
+            injector.terminate()
+        code = injector.wait()
+        log(f"injector stopped (exit {code})")
+    return code
+
+
+def main():
+    unsupported = None
+    delay = RESCAN_SECONDS
+    while True:
+        container = lepton_container()
+        if container and container != unsupported:
+            started = time.monotonic()
+            if bridge(container) == INJECTOR_MISSING:
+                log(f"{INJECTOR_PACKAGE} is not installed in {container}, waiting for another app")
+                unsupported = container
+            short_lived = time.monotonic() - started < 10
+            delay = min(delay * 2, 60) if short_lived else RESCAN_SECONDS
+        time.sleep(delay)
+
+
+if __name__ == "__main__":
+    main()

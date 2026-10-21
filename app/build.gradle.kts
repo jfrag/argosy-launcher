@@ -28,7 +28,7 @@ fun envString(key: String, default: String = ""): String =
 
 android {
     namespace = "com.nendo.argosy"
-    compileSdk = 35
+    compileSdk = 36
 
     defaultConfig {
         applicationId = "com.nendo.argosy"

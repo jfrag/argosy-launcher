@@ -17,7 +17,7 @@ import time
 import zipfile
 
 INJECTOR_CLASS = "com.nendo.argosy.tools.LeptonPadInjector"
-INJECTOR_PACKAGE = "com.nendo.argosy"
+INJECTOR_PACKAGES = ("com.nendo.argosy", "com.nendo.argosy.debug")
 INJECTOR_JAR = os.path.expanduser("~/.local/share/lepton-padbridge/injector.jar")
 CONTAINER_JAR = "/data/local/tmp/lepton-pad-injector.jar"
 VIRTUAL_PAD_IDS = {("28de", "11ff")}
@@ -165,7 +165,10 @@ def start_injector(container):
     if classpath:
         locate = f"APK={classpath}; "
     else:
-        locate = f"APK=$(pm path {INJECTOR_PACKAGE} | sed -n '1s/^package://p'); "
+        locate = "APK=; " + "".join(
+            f"[ -n \"$APK\" ] || APK=$(pm path {package} 2>/dev/null | sed -n '1s/^package://p'); "
+            for package in INJECTOR_PACKAGES
+        )
     command = (
         ANDROID_ENV
         + locate
@@ -242,7 +245,7 @@ def main():
         if container and container != unsupported:
             started = time.monotonic()
             if bridge(container) == INJECTOR_MISSING:
-                log(f"{INJECTOR_PACKAGE} is not installed in {container}, waiting for another app")
+                log(f"no Argosy APK or injector jar for {container}, waiting for another app")
                 unsupported = container
             short_lived = time.monotonic() - started < 10
             delay = min(delay * 2, 60) if short_lived else RESCAN_SECONDS
